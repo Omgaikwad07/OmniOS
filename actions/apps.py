@@ -6,10 +6,18 @@ Windows application launcher for OmniOS.
 Only applications explicitly listed in ``core.config.APP_ALLOWLIST`` can
 be launched.  Arbitrary executable paths and shell commands are never
 accepted.
+
+Launch strategy
+---------------
+* Real executables (non-zero size): ``subprocess.Popen([path])`` —
+  non-blocking, no ``shell=True``.
+* UWP app-alias stubs (0-byte files in WindowsApps): ``os.startfile(path)``
+  — the OS resolves the alias to the UWP package without a shell.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 from core.config import APP_ALLOWLIST
@@ -48,7 +56,12 @@ def open_app(app_name: str) -> ExecutionResult:
     exe_path = APP_ALLOWLIST[key]
 
     try:
-        subprocess.Popen([exe_path])  # non-blocking; no shell=True
+        # UWP app-alias stubs are 0-byte files; os.startfile lets the OS
+        # resolve them to the real UWP package without shell=True.
+        if os.path.isfile(exe_path) and os.path.getsize(exe_path) == 0:
+            os.startfile(exe_path)
+        else:
+            subprocess.Popen([exe_path])  # non-blocking; no shell=True
         return ExecutionResult(
             status=ResultStatus.SUCCESS,
             output=f"Launched {app_name}.",

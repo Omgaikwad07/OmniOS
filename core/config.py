@@ -24,7 +24,10 @@ APP_ALLOWLIST: dict[str, str] = {
         os.environ.get("SystemRoot", r"C:\Windows"), "System32", "calc.exe"
     ),
     "notepad": os.path.join(_SYSTEM32, "notepad.exe"),
-    "paint": os.path.join(_SYSTEM32, "mspaint.exe"),
+    "paint": os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")),
+        "Microsoft", "WindowsApps", "mspaint.exe",
+    ),
     "wordpad": os.path.join(
         os.environ.get("ProgramFiles", r"C:\Program Files"),
         "Windows NT", "Accessories", "wordpad.exe",
