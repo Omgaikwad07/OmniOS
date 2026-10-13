@@ -1,60 +1,117 @@
-"""Voice-based manual testing script for the OmniOS classifier and router."""
+"""Voice-based manual testing script and speech recognition module for OmniOS."""
 
+from __future__ import annotations
+
+from typing import Any, Optional, Tuple
 import speech_recognition as sr
-from core.schemas import TaskRequest
+from core.schemas import ExecutionResult, RoutingDecision, TaskRequest
 from router.classifier import classify
 from router.task_router import route
 
 SEPARATOR = "-" * 50
 
 
-def display_result(text: str) -> None:
-    classification = classify(text)
-    decision = route(TaskRequest(raw_input=text))
+def listen_for_command(
+    recognizer: Optional[sr.Recognizer] = None,
+    mic: Optional[Any] = None,
+    timeout: float = 8,
+    phrase_time_limit: float = 10,
+) -> Optional[str]:
+    """Capture a single voice command from the microphone and transcribe it.
 
-    print(f"\n{SEPARATOR}")
-    print(f"  Recognized text : {text}")
-    print(f"  Intent          : {classification.intent.value}")
-    print(f"  Confidence      : {classification.confidence:.0%}")
-    print(f"  Route           : {decision.route.value}")
-    print(f"  Action name     : {decision.action_name or '—'}")
-    print(f"  Arguments       : {decision.validated_args or '—'}")
-    print(f"  Explanation     : {decision.explanation}")
-    print(SEPARATOR)
+    Parameters
+    ----------
+    recognizer : sr.Recognizer, optional
+        Speech recognizer instance. Created if not provided.
+    mic : sr.Microphone, optional
+        Microphone instance. Created if not provided.
+    timeout : float
+        Seconds to wait for speech to start before timing out.
+    phrase_time_limit : float
+        Maximum seconds for a single phrase.
+
+    Returns
+    -------
+    str | None
+        The transcribed speech text, or None if no speech detected,
+        unintelligible, microphone error, or empty.
+    """
+    if recognizer is None:
+        recognizer = sr.Recognizer()
+
+    if mic is None:
+        try:
+            mic = sr.Microphone()
+        except Exception as e:
+            print(f"  Microphone initialization error: {e}")
+            return None
+
+    try:
+        with mic as source:
+            audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
+        text = recognizer.recognize_google(audio)
+        if text and text.strip():
+            return text.strip()
+        return None
+    except sr.WaitTimeoutError:
+        print("  No speech detected. Try again.")
+        return None
+    except sr.UnknownValueError:
+        print("  Could not understand audio. Try again.")
+        return None
+    except sr.RequestError as e:
+        print(f"  Speech API error: {e}")
+        return None
+    except Exception as e:
+        print(f"  Microphone error: {e}")
+        return None
+
+
+def display_result(text: str) -> Tuple[RoutingDecision, Optional[ExecutionResult]]:
+    """Process recognized speech through the OmniOS application pipeline.
+
+    Connects voice input to the real execution flow, routing the command
+    and executing approved local actions via the action registry while
+    preserving safety checks and pipeline formatting.
+    """
+    from app import process_command
+    return process_command(text)
 
 
 def main() -> None:
     recognizer = sr.Recognizer()
-    mic = sr.Microphone()
+    try:
+        mic = sr.Microphone()
+    except Exception as e:
+        print(f"  Microphone error: {e}")
+        return
 
-    print("\n=== OmniOS Voice Router Test ===")
-    print('Speak a command to classify it. Say "exit" to quit.\n')
+    print("\n=== OmniOS Voice Interface ===")
+    print('Speak a command to execute it. Say "exit" to quit.\n')
 
-    with mic as source:
-        recognizer.adjust_for_ambient_noise(source, duration=1)
-        print("Microphone ready.\n")
+    try:
+        with mic as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+            print("Microphone ready.\n")
+    except Exception as e:
+        print(f"  Microphone calibration error: {e}")
+        return
 
     while True:
         print("Listening...")
         try:
-            with mic as source:
-                audio = recognizer.listen(source, timeout=8, phrase_time_limit=10)
+            text = listen_for_command(recognizer, mic)
+            if not text:
+                continue
 
-            text = recognizer.recognize_google(audio)
             print(f"  (heard: \"{text}\")")
 
-            if text.strip().lower() == "exit":
+            if text.strip().lower() in {"exit", "quit"}:
                 print("\nExiting. Goodbye!")
                 break
 
             display_result(text)
 
-        except sr.WaitTimeoutError:
-            print("  No speech detected. Try again.")
-        except sr.UnknownValueError:
-            print("  Could not understand audio. Try again.")
-        except sr.RequestError as e:
-            print(f"  Speech API error: {e}")
         except KeyboardInterrupt:
             print("\n\nInterrupted. Goodbye!")
             break
