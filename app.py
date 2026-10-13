@@ -10,6 +10,9 @@ Type 'exit' or 'quit' to stop.
 
 from __future__ import annotations
 
+import os
+
+import core.config as _cfg
 from core.schemas import Route, TaskRequest
 from router.task_router import route
 from actions.registry import execute
@@ -77,7 +80,18 @@ def run() -> None:
         decision = route(TaskRequest(raw_input=user_input))
 
         if decision.route == Route.LOCAL:
-            result = execute(decision.action_name, decision.validated_args or {})
+            # If the router classified this as FILE_SEARCH but the query
+            # looks like an exact filename with an allowed extension, try
+            # open_file first so the file is opened rather than just found.
+            action = decision.action_name
+            args = decision.validated_args or {}
+            if action == "file_search":
+                query = args.get("query", "")
+                _, ext = os.path.splitext(query)
+                if ext.lower() in _cfg.FILE_OPEN_ALLOWED_EXTENSIONS:
+                    action = "open_file"
+                    args = {"filename": query}
+            result = execute(action, args)
             _display(decision, result)
         else:
             _display(decision)

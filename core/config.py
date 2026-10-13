@@ -46,3 +46,21 @@ FILE_SEARCH_ROOT: str = os.path.expanduser("~")
 # Hard limits to prevent runaway traversal.
 FILE_SEARCH_MAX_RESULTS: int = 50
 FILE_SEARCH_MAX_DEPTH: int = 10
+
+# ---------------------------------------------------------------------------
+# File-open allowlist
+# ---------------------------------------------------------------------------
+
+# Only files with these extensions may be opened by the open_file action.
+FILE_OPEN_ALLOWED_EXTENSIONS: frozenset[str] = frozenset({
+    # Documents
+    ".pdf", ".doc", ".docx", ".txt", ".csv", ".rtf",
+    # Spreadsheets
+    ".xls", ".xlsx",
+    # Presentations
+    ".ppt", ".pptx",
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+    # Media
+    ".mp3", ".mp4", ".wav", ".avi", ".mkv",
+})
