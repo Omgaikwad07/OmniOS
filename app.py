@@ -12,19 +12,31 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Optional, Tuple
 
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import core.config as _cfg
-from core.schemas import ExecutionResult, Route, RoutingDecision, TaskRequest
+from core.schemas import ExecutionResult, ResultStatus, Route, RoutingDecision, TaskRequest
 from router.task_router import route
 from actions.registry import execute
 
 
 _BANNER = """\
-╔══════════════════════════════════════════╗
-║              OmniOS  v0.1                ║
-║   Local Windows Action Layer — Demo      ║
-╚══════════════════════════════════════════╝
+============================================
+              OmniOS  v0.1                  
+   Local Windows Action Layer — Demo        
+============================================
 Type a command, 'voice' to speak, or 'exit' to quit.
 
 Examples:
@@ -36,7 +48,7 @@ Examples:
   voice
 """
 
-_SEPARATOR = "─" * 44
+_SEPARATOR = "-" * 44
 
 
 def _display(decision: RoutingDecision, result: Optional[ExecutionResult] = None) -> None:
@@ -96,6 +108,44 @@ def _extract_filename_from_input(user_input: str) -> Optional[str]:
     return None
 
 
+def _handle_llm_task(user_input: str) -> ExecutionResult:
+    """Execute an LLM task (either PDF summarization or general language reasoning)."""
+    # Check if a PDF file was targeted for summarization
+    pdf_candidate = None
+    for token in user_input.split():
+        clean = token.strip(".,;'\"")
+        if clean.lower().endswith(".pdf"):
+            pdf_candidate = clean
+            break
+
+    if pdf_candidate:
+        from agent.pdf_summarizer import summarize_pdf
+        target_path = pdf_candidate
+        if not os.path.exists(target_path):
+            search_res = execute("file_search", {"query": os.path.basename(pdf_candidate)})
+            if search_res.status == ResultStatus.SUCCESS and search_res.output:
+                target_path = search_res.output[0]
+        return summarize_pdf(target_path, consent_to_external_processing=True)
+
+    # General LLM reasoning task
+    from agent.llm_client import generate_text
+    try:
+        output = generate_text(prompt=user_input)
+        return ExecutionResult(
+            status=ResultStatus.SUCCESS,
+            output=output,
+            error=None,
+            used_llm=True,
+        )
+    except Exception as exc:
+        return ExecutionResult(
+            status=ResultStatus.ERROR,
+            output=None,
+            error=str(exc),
+            used_llm=True,
+        )
+
+
 def process_command(user_input: str) -> Tuple[RoutingDecision, Optional[ExecutionResult]]:
     """Process a natural-language command through the OmniOS pipeline.
 
@@ -141,6 +191,13 @@ def process_command(user_input: str) -> Tuple[RoutingDecision, Optional[Executio
 
         result = execute(action, args)
         _display(decision, result)
+    elif decision.route == Route.LLM:
+        if not _cfg.GROQ_API_KEY:
+            result = None
+            _display(decision)
+        else:
+            result = _handle_llm_task(user_input)
+            _display(decision, result)
     else:
         result = None
         _display(decision)

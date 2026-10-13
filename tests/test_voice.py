@@ -143,6 +143,7 @@ class TestVoicePipelineExecution(unittest.TestCase):
             finally:
                 cfg.FILE_SEARCH_ROOT = orig
 
+    @patch("core.config.GROQ_API_KEY", "")
     def test_voice_command_llm_route_never_executes_actions(self):
         decision, result = display_result("summarize my meeting notes")
 
