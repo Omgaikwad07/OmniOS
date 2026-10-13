@@ -3,19 +3,15 @@
 
 from groq import Groq, APIConnectionError, APIStatusError
 
-from core.config import (
-    GROQ_API_KEY,
-    GROQ_MODEL,
-    LLM_TIMEOUT_SECONDS,
-    MAX_OUTPUT_TOKENS,
-)
+import core.config as cfg
 from core.exceptions import LLMConfigurationError, LLMRequestError
 
 
-def generate_text(prompt: str, document_text: str) -> str:
+def generate_text(prompt: str, document_text: str = "") -> str:
     """Generate text using the Groq API."""
 
-    if not GROQ_API_KEY:
+    api_key = cfg.GROQ_API_KEY
+    if not api_key:
         raise LLMConfigurationError(
             "GROQ_API_KEY is missing. Add it to your .env file."
         )
@@ -23,19 +19,15 @@ def generate_text(prompt: str, document_text: str) -> str:
     if not prompt.strip():
         raise ValueError("Prompt cannot be empty.")
 
-    if not document_text.strip():
-        raise ValueError("Document text cannot be empty.")
-
     try:
         client = Groq(
-            api_key=GROQ_API_KEY,
-            timeout=LLM_TIMEOUT_SECONDS,
+            api_key=api_key,
+            timeout=cfg.LLM_TIMEOUT_SECONDS,
             max_retries=2,
         )
 
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
+        if document_text.strip():
+            messages = [
                 {
                     "role": "system",
                     "content": (
@@ -53,12 +45,31 @@ def generate_text(prompt: str, document_text: str) -> str:
                         f"<document>\n{document_text}\n</document>"
                     ),
                 },
-            ],
-            max_tokens=MAX_OUTPUT_TOKENS,
+            ]
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are OmniOS, an intelligent AI desktop assistant. "
+                        "Provide direct, helpful, concise, and accurate answers."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ]
+
+        response = client.chat.completions.create(
+            model=cfg.GROQ_MODEL,
+            messages=messages,
+            max_tokens=cfg.MAX_OUTPUT_TOKENS,
             temperature=0.2,
         )
 
-        result = response.choices[0].message.content
+        message = response.choices[0].message
+        result = message.content or getattr(message, "reasoning", "")
 
         if not result or not result.strip():
             raise LLMRequestError("Groq returned an empty response.")

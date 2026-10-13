@@ -64,12 +64,22 @@ class TestAppRun(unittest.TestCase):
         self.assertIn("OPEN_URL", out)
         self.assertIn("SUCCESS", out)
 
+    @patch("core.config.GROQ_API_KEY", "")
     def test_llm_task_not_executed(self):
         out = self._run(["summarize my notes", "exit"])
         self.assertIn("LLM", out)
         self.assertIn("not yet implemented", out)
         # Must not claim SUCCESS
         self.assertNotIn("SUCCESS", out)
+
+    @patch("core.config.GROQ_API_KEY", "test_key")
+    @patch("agent.llm_client.generate_text", return_value="Here is the summary.")
+    def test_llm_task_executed(self, mock_generate):
+        out = self._run(["summarize my notes", "exit"])
+        self.assertIn("LLM", out)
+        self.assertIn("SUCCESS", out)
+        self.assertIn("Here is the summary.", out)
+        mock_generate.assert_called_once()
 
     def test_unknown_command_handled_gracefully(self):
         out = self._run(["xyzzy frobulate the quux", "exit"])
