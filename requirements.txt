@@ -1,1 +1,4 @@
-# Dependencies
+# OmniOS dependencies
+# All core functionality uses Python stdlib only.
+# pytest is required to run the automated test suite.
+pytest>=7.0
