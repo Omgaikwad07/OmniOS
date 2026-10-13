@@ -1,6 +1,12 @@
+
 # OmniOS dependencies
-# All core functionality uses Python stdlib only.
-# pytest is required to run the automated test suite.
+
+# LLM handler and PDF processing
+google-genai
+PyMuPDF
+python-dotenv
+
+# Automated tests
 pytest>=7.0
 
 # Voice interface (required by test_router_voice.py and tests/test_voice.py)

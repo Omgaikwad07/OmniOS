@@ -1,28 +1,34 @@
-"""
-core/config.py
-==============
-Static configuration for OmniOS local actions.
 
-All mutable runtime state lives elsewhere; this module contains only
-constants so it can be imported without side-effects.
-"""
+"""Configuration for OmniOS local actions and LLM handling."""
 
 import os
+from dotenv import load_dotenv
 
-# ---------------------------------------------------------------------------
+load_dotenv()
+
+# LLM configuration
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "llama-3.3-70b-versatile",
+)
+
+LLM_TIMEOUT_SECONDS = 30
+MAX_PDF_BYTES = 10 * 1024 * 1024
+MAX_PDF_PAGES = 100
+MAX_DOCUMENT_CHARS = 60_000
+MAX_OUTPUT_TOKENS = 1500
+
 # Application allowlist
-# ---------------------------------------------------------------------------
-# Maps the canonical lowercase app name to its absolute Windows executable
-# path.  Only apps listed here can be launched by the action layer.
-# Paths use environment variables so they work across Windows editions.
-
-_SYSTEM32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
-_SYSWOW64 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "SysWOW64")
+_SYSTEM32 = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"), "System32"
+)
+_SYSWOW64 = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"), "SysWOW64"
+)
 
 APP_ALLOWLIST: dict[str, str] = {
-    "calculator": os.path.join(
-        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "calc.exe"
-    ),
+    "calculator": os.path.join(_SYSTEM32, "calc.exe"),
     "notepad": os.path.join(_SYSTEM32, "notepad.exe"),
     "paint": os.path.join(
         os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")),
@@ -39,31 +45,16 @@ APP_ALLOWLIST: dict[str, str] = {
     "snipping tool": os.path.join(_SYSTEM32, "SnippingTool.exe"),
 }
 
-# ---------------------------------------------------------------------------
-# File-search defaults
-# ---------------------------------------------------------------------------
-
-# Default root directory for file searches.  Never search the whole drive.
+# File-search configuration
 FILE_SEARCH_ROOT: str = os.path.expanduser("~")
-
-# Hard limits to prevent runaway traversal.
 FILE_SEARCH_MAX_RESULTS: int = 50
 FILE_SEARCH_MAX_DEPTH: int = 10
 
-# ---------------------------------------------------------------------------
 # File-open allowlist
-# ---------------------------------------------------------------------------
-
-# Only files with these extensions may be opened by the open_file action.
 FILE_OPEN_ALLOWED_EXTENSIONS: frozenset[str] = frozenset({
-    # Documents
     ".pdf", ".doc", ".docx", ".txt", ".csv", ".rtf",
-    # Spreadsheets
     ".xls", ".xlsx",
-    # Presentations
     ".ppt", ".pptx",
-    # Images
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
-    # Media
     ".mp3", ".mp4", ".wav", ".avi", ".mkv",
 })
