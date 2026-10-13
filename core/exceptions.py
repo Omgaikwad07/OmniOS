@@ -1,10 +1,21 @@
-# Exceptions
 
-"""Custom exceptions for the OmniOS AI handler."""
+"""
+core/exceptions.py
+==================
+Project-wide exception hierarchy for OmniOS.
+"""
 
 
 class OmniOSError(Exception):
-    """Base exception for OmniOS handler errors."""
+    """Base exception for all OmniOS errors."""
+
+
+class UnsupportedActionError(OmniOSError):
+    """Raised when an action name is not in the registry."""
+
+
+class ValidationError(OmniOSError):
+    """Raised when action arguments fail validation."""
 
 
 class LLMConfigurationError(OmniOSError):
@@ -21,3 +32,4 @@ class PDFExtractionError(OmniOSError):
 
 class DocumentLimitError(OmniOSError):
     """The PDF exceeds the supported limits."""
+
