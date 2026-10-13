@@ -25,6 +25,7 @@ from typing import Any, Dict
 from actions.apps import open_app
 from actions.calculator import calculate
 from actions.file_search import file_search
+from actions.open_file import open_file
 from actions.urls import open_url
 from core.schemas import ExecutionResult, ResultStatus
 
@@ -40,6 +41,7 @@ _REGISTRY: Dict[str, tuple] = {
     "open_url":    (open_url,     ("url",),        ()),
     "calculate":   (calculate,    ("expression",), ()),
     "file_search": (file_search,  ("query",),      ("root", "location")),
+    "open_file":   (open_file,    ("filename",),   ("root",)),
 }
 
 
@@ -110,11 +112,15 @@ def execute(action_name: str, args: Dict[str, Any]) -> ExecutionResult:
             )
 
     # Dispatch — pass only the args the handler accepts.
-    # open_app, open_url, calculate each take a single positional arg.
-    # file_search takes query + optional root (location is router metadata, not passed).
     if action_name == "file_search":
         return handler(
             query=args["query"],
+            root=args.get("root"),
+        )
+
+    if action_name == "open_file":
+        return handler(
+            filename=args["filename"],
             root=args.get("root"),
         )
 
