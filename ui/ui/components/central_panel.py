@@ -1,0 +1,611 @@
+"""
+ui/components/central_panel.py
+================================
+Central workspace panel.
+
+Sections (top to bottom):
+  1. Top card  — greeting, command input bar, quick-action chips
+  2. Execution Details card — 4-step pipeline diagram + metadata fields
+  3. Result card — empty state or live result output
+
+State integration:
+  • Subscribes to AppState.notify().
+  • Calls on_submit(text) when the user submits a command.
+  • send button is disabled while is_processing is True.
+  • Metadata fields and result area are updated after each pipeline run.
+"""
+
+from __future__ import annotations
+
+import tkinter as tk
+from typing import Any, Callable, Optional
+
+import customtkinter as ctk
+
+from ui.styles import COLORS, DIMS, FONTS, ICO
+from ui.state import AppState
+
+
+# ---------------------------------------------------------------------------
+# Quick-action chip data
+#   (icon_char, chip_label, command_to_fill, icon_color)
+# ---------------------------------------------------------------------------
+
+_CHIPS = [
+    (ICO["calculator"], "Open Calculator",    "open calculator",   COLORS["blue"]),
+    ("\u03a3",          "Calculate 125 \u00d7 48", "calculate 125 * 48", COLORS["step3_fg"]),
+    (ICO["search"],     "Find my resume",     "find my resume",    COLORS["green"]),
+    (ICO["pdf"],        "Summarize this PDF", "summarize this PDF",COLORS["purple"]),
+]
+
+
+# ---------------------------------------------------------------------------
+# Execution-step data
+#   (icon_char, bg_color_key, fg_color_key, step_label, step_sub)
+# ---------------------------------------------------------------------------
+
+_STEPS = [
+    (ICO["chat"],    "step1_bg", "step1_fg", "1. Intent",  "Detect request"),
+    (ICO["route"],   "step2_bg", "step2_fg", "2. Route",   "Local or LLM"),
+    (ICO["execute"], "step3_bg", "step3_fg", "3. Execute", "Run action"),
+    (ICO["result"],  "step4_bg", "step4_fg", "4. Result",  "Show output"),
+]
+
+# Metadata field keys (left-to-right)
+_META_FIELDS = ["Intent", "Route", "Confidence", "Action", "LLM Used"]
+
+
+# ---------------------------------------------------------------------------
+# CentralPanel
+# ---------------------------------------------------------------------------
+
+class CentralPanel(ctk.CTkFrame):
+    """Main workspace between the two sidebars."""
+
+    def __init__(
+        self,
+        parent: ctk.CTkBaseClass,
+        *,
+        state: AppState,
+        on_submit: Callable[[str], None],
+        **kw,
+    ) -> None:
+        super().__init__(
+            parent,
+            fg_color=COLORS["window_bg"],
+            corner_radius=0,
+            border_width=0,
+            **kw,
+        )
+        self._state = state
+        self._on_submit = on_submit
+
+        # Tkinter StringVars for live metadata updates
+        self._meta_vars: dict[str, tk.StringVar] = {
+            field: tk.StringVar(value="\u2013") for field in _META_FIELDS
+        }
+
+        # Keep the result row compact; hide it until a result exists.
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=0)
+        self.grid_columnconfigure(0, weight=1)
+
+        self._build_top_card()
+        self._build_exec_card()
+        self._build_result_card()
+
+        state.subscribe(self._refresh)
+
+    # =========================================================================
+    # Build — Top card (greeting, input, chips)
+    # =========================================================================
+
+    def _build_top_card(self) -> None:
+        card = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["surface"],
+            corner_radius=DIMS["card_radius"],
+            border_width=DIMS["border_w"],
+            border_color=COLORS["border"],
+        )
+        card.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        card.grid_columnconfigure(0, weight=1)
+
+        # ── Blue accent bar ──────────────────────────────────────────────────
+        ctk.CTkFrame(
+            card,
+            width=36,
+            height=3,
+            corner_radius=2,
+            fg_color=COLORS["blue"],
+        ).grid(row=0, column=0, sticky="w", padx=(DIMS["pad_card"], 0), pady=(DIMS["pad_card"], 2))
+
+        # ── "Hello," ─────────────────────────────────────────────────────────
+        ctk.CTkLabel(
+            card,
+            text="Hello,",
+            font=FONTS["greeting"],
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", padx=DIMS["pad_card"])
+
+        # ── Heading ──────────────────────────────────────────────────────────
+        ctk.CTkLabel(
+            card,
+            text="How can I help you today?",
+            font=FONTS["heading_xl"],
+            text_color=COLORS["text_primary"],
+            anchor="w",
+        ).grid(row=2, column=0, sticky="w", padx=DIMS["pad_card"])
+
+        # ── Subtitle ─────────────────────────────────────────────────────────
+        ctk.CTkLabel(
+            card,
+            text="Open apps, search files, calculate, summarize PDFs, or just ask.",
+            font=FONTS["body"],
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+        ).grid(row=3, column=0, sticky="w", padx=DIMS["pad_card"], pady=(2, 14))
+
+        # ── Input bar ────────────────────────────────────────────────────────
+        self._build_input_bar(card, row=4)
+
+        # ── Quick-action chips ───────────────────────────────────────────────
+        self._build_chips(card, row=5)
+
+    def _build_input_bar(self, parent: ctk.CTkFrame, *, row: int) -> None:
+        bar = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["surface_alt"],
+            corner_radius=DIMS["btn_radius"],
+            border_width=DIMS["border_w"],
+            border_color=COLORS["border_input"],
+            height=DIMS["input_h"],
+        )
+        bar.grid(row=row, column=0, sticky="ew", padx=DIMS["pad_card"], pady=(0, 10))
+        bar.grid_propagate(False)
+
+        # Lightning accent icon
+        ctk.CTkLabel(
+            bar,
+            text=ICO["flash"],
+            font=FONTS["icon_sm"],
+            text_color=COLORS["text_muted"],
+            width=28,
+        ).pack(side="left", padx=(10, 0))
+
+        # Command Entry — expands to fill
+        self.entry = ctk.CTkEntry(
+            bar,
+            placeholder_text="Type your command here...",
+            placeholder_text_color=COLORS["text_muted"],
+            fg_color="transparent",
+            border_width=0,
+            text_color=COLORS["text_primary"],
+            font=FONTS["body"],
+        )
+        self.entry.pack(side="left", fill="x", expand=True, padx=6)
+        self.entry.bind("<Return>", self._on_enter)
+
+        # Microphone button (not implemented in Phase 1 — visible but inactive)
+        ctk.CTkButton(
+            bar,
+            text=ICO["mic"],
+            font=FONTS["icon_sm"],
+            width=34,
+            height=34,
+            corner_radius=17,
+            fg_color="transparent",
+            hover_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            border_width=0,
+            command=self._on_mic,
+        ).pack(side="left", padx=(0, 4))
+
+        # Send button
+        self._send_btn = ctk.CTkButton(
+            bar,
+            text=f"{ICO['send']}  Send",
+            font=FONTS["body"],
+            width=DIMS["send_btn_w"],
+            height=34,
+            corner_radius=DIMS["btn_radius"],
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            text_color="#FFFFFF",
+            border_width=0,
+            command=self._on_send,
+        )
+        self._send_btn.pack(side="left", padx=(0, 6))
+
+    def _build_chips(self, parent: ctk.CTkFrame, *, row: int) -> None:
+        chips_row = ctk.CTkFrame(parent, fg_color="transparent")
+        chips_row.grid(row=row, column=0, sticky="w", padx=DIMS["pad_card"], pady=(0, DIMS["pad_card"]))
+
+        for icon, label, cmd, icon_color in _CHIPS:
+            self._make_chip(chips_row, icon=icon, label=label, cmd=cmd, icon_color=icon_color)
+
+    def _make_chip(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        icon: str,
+        label: str,
+        cmd: str,
+        icon_color: str,
+    ) -> None:
+        chip = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["surface"],
+            corner_radius=DIMS["chip_radius"],
+            border_width=DIMS["border_w"],
+            border_color=COLORS["border"],
+            cursor="hand2",
+        )
+        chip.pack(side="left", padx=(0, 8))
+
+        icon_lbl = ctk.CTkLabel(
+            chip,
+            text=icon,
+            font=FONTS["icon_sm"],
+            text_color=icon_color,
+            width=22,
+        )
+        icon_lbl.pack(side="left", padx=(8, 2), pady=8)
+
+        text_lbl = ctk.CTkLabel(
+            chip,
+            text=label,
+            font=FONTS["body_sm"],
+            text_color=COLORS["text_secondary"],
+        )
+        text_lbl.pack(side="left", padx=(0, 10), pady=8)
+
+        # Hover effects and click binding
+        def _hover_on(_e=None) -> None:
+            chip.configure(fg_color=COLORS["nav_selected"])
+            text_lbl.configure(text_color=COLORS["text_primary"])
+        def _hover_off(_e=None) -> None:
+            chip.configure(fg_color=COLORS["surface"])
+            text_lbl.configure(text_color=COLORS["text_secondary"])
+        def _click(_e=None) -> None:
+            self._fill_input(cmd)
+
+        for w in (chip, icon_lbl, text_lbl):
+            w.bind("<Enter>", _hover_on)
+            w.bind("<Leave>", _hover_off)
+            w.bind("<Button-1>", _click)
+
+    # =========================================================================
+    # Build — Execution Details card
+    # =========================================================================
+
+    def _build_exec_card(self) -> None:
+        card = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["surface"],
+            corner_radius=DIMS["card_radius"],
+            border_width=DIMS["border_w"],
+            border_color=COLORS["border"],
+        )
+        card.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
+        card.grid_columnconfigure(0, weight=1)
+
+        # ── Header ───────────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="w", padx=DIMS["pad_card"], pady=(12, 10))
+
+        ctk.CTkLabel(
+            hdr,
+            text=ICO["wave"],
+            font=FONTS["icon_sm"],
+            text_color=COLORS["blue"],
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(
+            hdr,
+            text="Execution Details",
+            font=FONTS["heading_md"],
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        # ── Separator ────────────────────────────────────────────────────────
+        ctk.CTkFrame(
+            card, height=1, fg_color=COLORS["border"], corner_radius=0
+        ).grid(row=1, column=0, sticky="ew", padx=DIMS["pad_card"])
+
+        # ── Steps row ────────────────────────────────────────────────────────
+        steps_container = ctk.CTkFrame(card, fg_color="transparent")
+        steps_container.grid(row=2, column=0, sticky="ew", padx=DIMS["pad_card"], pady=(12, 8))
+        # 7 columns: step step step step step (with arrows between)
+        for col in (0, 2, 4, 6):
+            steps_container.grid_columnconfigure(col, weight=1)
+        for col in (1, 3, 5):
+            steps_container.grid_columnconfigure(col, weight=0, minsize=30)
+
+        for i, (icon, bg_key, fg_key, step_label, step_sub) in enumerate(_STEPS):
+            self._make_step(
+                steps_container,
+                col=i * 2,
+                icon=icon,
+                icon_bg=COLORS[bg_key],
+                icon_fg=COLORS[fg_key],
+                label=step_label,
+                sub=step_sub,
+            )
+            if i < len(_STEPS) - 1:
+                ctk.CTkLabel(
+                    steps_container,
+                    text="\u2192",
+                    font=FONTS["body"],
+                    text_color=COLORS["text_muted"],
+                ).grid(row=0, column=i * 2 + 1, padx=0, pady=10)
+
+        # ── Separator ────────────────────────────────────────────────────────
+        ctk.CTkFrame(
+            card, height=1, fg_color=COLORS["border"], corner_radius=0
+        ).grid(row=3, column=0, sticky="ew", padx=DIMS["pad_card"])
+
+        # ── Metadata row ─────────────────────────────────────────────────────
+        meta_row = ctk.CTkFrame(card, fg_color="transparent")
+        meta_row.grid(row=4, column=0, sticky="ew", padx=DIMS["pad_card"], pady=(10, DIMS["pad_card"]))
+
+        for i, field in enumerate(_META_FIELDS):
+            meta_row.grid_columnconfigure(i, weight=1)
+            col_frame = ctk.CTkFrame(meta_row, fg_color="transparent")
+            col_frame.grid(row=0, column=i, sticky="nsew", padx=(0, 8 if i < 4 else 0))
+            col_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                col_frame,
+                text=field,
+                font=FONTS["caption"],
+                text_color=COLORS["text_secondary"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+            val_box = ctk.CTkFrame(
+                col_frame,
+                fg_color=COLORS["surface_alt"],
+                corner_radius=4,
+                border_width=DIMS["border_w"],
+                border_color=COLORS["border"],
+                height=32,
+            )
+            val_box.grid(row=1, column=0, sticky="ew")
+            val_box.grid_propagate(False)
+            val_box.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                val_box,
+                textvariable=self._meta_vars[field],
+                font=FONTS["caption"],
+                text_color=COLORS["text_secondary"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+
+    @staticmethod
+    def _make_step(
+        parent: ctk.CTkFrame,
+        *,
+        col: int,
+        icon: str,
+        icon_bg: str,
+        icon_fg: str,
+        label: str,
+        sub: str,
+    ) -> None:
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=0, column=col, sticky="nsew", padx=4)
+        frame.grid_columnconfigure(0, weight=1)
+
+        # Icon circle
+        circle = ctk.CTkFrame(
+            frame,
+            width=DIMS["step_circle"],
+            height=DIMS["step_circle"],
+            corner_radius=DIMS["step_circle"] // 2,
+            fg_color=icon_bg,
+        )
+        circle.grid(row=0, column=0, pady=(4, 6))
+        circle.grid_propagate(False)
+        ctk.CTkLabel(
+            circle,
+            text=icon,
+            font=FONTS["icon_sm"],
+            text_color=icon_fg,
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        # Step label
+        ctk.CTkLabel(
+            frame,
+            text=label,
+            font=FONTS["heading_sm"],
+            text_color=COLORS["text_primary"],
+            anchor="center",
+        ).grid(row=1, column=0)
+
+        # Step sub-label
+        ctk.CTkLabel(
+            frame,
+            text=sub,
+            font=FONTS["caption"],
+            text_color=COLORS["text_secondary"],
+            anchor="center",
+        ).grid(row=2, column=0, pady=(1, 4))
+
+    # =========================================================================
+    # Build — Result card
+    # =========================================================================
+
+    def _build_result_card(self) -> None:
+        self._result_expanded = False
+        self._has_result = False
+        card = ctk.CTkFrame(
+            self, fg_color=COLORS["surface"], corner_radius=DIMS["card_radius"],
+            border_width=DIMS["border_w"], border_color=COLORS["border"],
+        )
+        self._result_card = card
+        card.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 16))
+        card.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(card, fg_color="transparent", cursor="hand2")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=10)
+        header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(header, text=ICO["document"], font=FONTS["icon_lg"],
+                     text_color=COLORS["purple"], width=48).grid(row=0, column=0, rowspan=2)
+        title = ctk.CTkLabel(header, text="Result available  ·  Click to view",
+                             font=FONTS["heading_md"], text_color=COLORS["text_link"], anchor="w")
+        title.grid(row=0, column=1, sticky="w")
+        self._result_subtitle = ctk.CTkLabel(
+            header, text="Last output hidden", font=FONTS["caption"],
+            text_color=COLORS["text_secondary"], anchor="w")
+        self._result_subtitle.grid(row=1, column=1, sticky="w")
+        self._result_count = ctk.CTkLabel(
+            header, text="1 item", font=FONTS["caption"],
+            text_color=COLORS["blue"], fg_color=COLORS["step1_bg"],
+            corner_radius=14)
+        self._result_count.grid(row=0, column=2, rowspan=2, padx=8, ipadx=10, ipady=5)
+        self._result_toggle = ctk.CTkButton(
+            header, text="⌄", width=30, height=30, corner_radius=15,
+            fg_color="transparent", hover_color=COLORS["nav_selected"],
+            text_color=COLORS["blue"], command=self._toggle_result)
+        self._result_toggle.grid(row=0, column=3, rowspan=2)
+        for widget in (header, title, self._result_subtitle, self._result_count):
+            widget.bind("<Button-1>", lambda _e: self._toggle_result())
+
+        self._result_content = ctk.CTkFrame(
+            card, fg_color=COLORS["surface_alt"], corner_radius=8,
+            border_width=1, border_color=COLORS["border"])
+        self._result_content.grid_columnconfigure(0, weight=1)
+        self._result_textbox = ctk.CTkTextbox(
+            self._result_content, fg_color="transparent", border_width=0,
+            text_color=COLORS["text_primary"], font=FONTS["mono"],
+            wrap="word", activate_scrollbars=True, height=150, state="disabled")
+        self._result_textbox.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self._result_card.grid_remove()
+
+    def _toggle_result(self) -> None:
+        if not self._has_result:
+            return
+        self._result_expanded = not self._result_expanded
+        if self._result_expanded:
+            self._result_content.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+            self._result_toggle.configure(text="⌃")
+            self._result_subtitle.configure(text="Click to collapse")
+        else:
+            self._result_content.grid_remove()
+            self._result_toggle.configure(text="⌄")
+            self._result_subtitle.configure(text="Last output hidden")
+
+    # =========================================================================
+    # State refresh
+    # =========================================================================
+
+    def _refresh(self) -> None:
+        """Update widgets whenever AppState changes."""
+        state = self._state
+
+        # Send button state
+        if state.is_processing:
+            self._send_btn.configure(text="...", state="disabled", fg_color=COLORS["text_muted"])
+        else:
+            self._send_btn.configure(
+                text=f"{ICO['send']}  Send",
+                state="normal",
+                fg_color=COLORS["blue"],
+            )
+
+        decision = state.last_decision
+        result   = state.last_result
+
+        # Metadata fields
+        if decision:
+            self._meta_vars["Intent"].set(decision.intent.value)
+            self._meta_vars["Route"].set(decision.route.value)
+            self._meta_vars["Confidence"].set(f"{decision.confidence:.0%}")
+            self._meta_vars["Action"].set(decision.action_name or "\u2013")
+            self._meta_vars["LLM Used"].set(
+                "Yes" if (result and result.used_llm) else "No"
+            )
+        else:
+            for var in self._meta_vars.values():
+                var.set("\u2013")
+
+        # Show a compact result row only after an execution has completed.
+        if result is not None:
+            self._has_result = True
+            self._result_card.grid()
+            self._show_result(result)
+            output = result.output
+            count = len(output) if isinstance(output, (list, tuple)) else (0 if output is None else 1)
+            self._result_count.configure(text=f"{count} item" if count == 1 else f"{count} items")
+        elif decision is not None and not state.is_processing:
+            self._has_result = True
+            self._result_card.grid()
+            self._show_text("LLM is not configured. Set GROQ_API_KEY in .env to enable language tasks.", is_error=True)
+            self._result_count.configure(text="Unavailable")
+        else:
+            self._has_result = False
+            self._result_expanded = False
+            self._result_card.grid_remove()
+
+    def _show_result(self, result: Any) -> None:
+        from core.schemas import ResultStatus
+        if result.status == ResultStatus.SUCCESS:
+            if result.output is not None:
+                text = (
+                    "\n".join(result.output)
+                    if isinstance(result.output, (list, tuple))
+                    else str(result.output)
+                )
+            else:
+                text = "(Action completed successfully — no text output.)"
+            self._show_text(text, is_error=False)
+        elif result.status == ResultStatus.REFUSED:
+            self._show_text(
+                f"Action refused:\n{result.error or 'No details available.'}",
+                is_error=True,
+            )
+        else:
+            self._show_text(
+                f"Error:\n{result.error or str(result.output)}",
+                is_error=True,
+            )
+
+    def _show_text(self, text: str, *, is_error: bool) -> None:
+        self._result_textbox.configure(
+            state="normal",
+            text_color=COLORS["red"] if is_error else COLORS["text_primary"],
+        )
+        self._result_textbox.delete("0.0", "end")
+        self._result_textbox.insert("0.0", text)
+        self._result_textbox.configure(state="disabled")
+
+    # =========================================================================
+    # Interaction handlers
+    # =========================================================================
+
+    def _on_send(self) -> None:
+        text = self.entry.get().strip()
+        if text and not self._state.is_processing:
+            self.entry.delete(0, "end")
+            self._on_submit(text)
+
+    def _on_enter(self, _event=None) -> None:
+        self._on_send()
+
+    def _on_mic(self) -> None:
+        """Voice input — not implemented in Phase 1.  Show a clear status."""
+        self._show_text(
+            "Voice input is not available in Phase 1.\n"
+            "Type your command in the text box and press Send.",
+            is_error=True,
+        )
+
+    def _fill_input(self, text: str) -> None:
+        """Pre-fill the command entry from a quick-action chip."""
+        self.entry.delete(0, "end")
+        self.entry.insert(0, text)
+        self.entry.focus_set()

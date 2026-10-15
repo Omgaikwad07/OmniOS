@@ -1,0 +1,150 @@
+"""OmniOS desktop application launcher."""
+from __future__ import annotations
+import threading
+import traceback
+import tkinter as tk
+from typing import Optional
+import customtkinter as ctk
+from app import process_command
+from core.schemas import ExecutionResult, ResultStatus, Route, RoutingDecision, Intent
+from ui.state import AppState
+from ui.styles import COLORS, DIMS
+from ui.components.central_panel import CentralPanel
+from ui.components.right_sidebar import RightSidebar
+
+class OmniOSApp(ctk.CTk):
+    """Two-column desktop UI matching the approved OmniOS reference."""
+    def __init__(self) -> None:
+        super().__init__()
+        ctk.set_appearance_mode("light")
+        self.title("OmniOS")
+        self.geometry("1536x1024")
+        self.minsize(1100, 720)
+        self.configure(fg_color=COLORS["window_bg"])
+        # Paint a restrained pastel gradient behind the glass-like cards.
+        # Tk Canvas is used because CustomTkinter does not support alpha fills.
+        self._gradient = tk.Canvas(self, highlightthickness=0, bd=0)
+        self._gradient.place(x=0, y=0, relwidth=1, relheight=1)
+        self._paint_gradient()
+        self.bind("<Configure>", self._on_resize, add="+")
+        self.state_store = AppState()
+        self._closing = False
+        self._workers: set[threading.Thread] = set()
+        self.central_panel = CentralPanel(
+            self, state=self.state_store, on_submit=self.submit_command
+        )
+        # Reference-anchored proportional geometry: at 1536x1024 the cards
+        # land at x≈120 and the right sidebar at x≈1146, matching the approved
+        # screenshot. Relative placement scales with the window dimensions.
+        self.central_panel.place(
+            relx=0.068, rely=0.022, relwidth=0.678, relheight=0.92
+        )
+        self.right_sidebar = RightSidebar(self, state=self.state_store, width=369)
+        self.right_sidebar.place(
+            relx=0.744, rely=0.022, relwidth=0.252, relheight=0.92
+        )
+        self.right_sidebar.grid_propagate(False)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+
+    def _paint_gradient(self) -> None:
+        """Paint a soft two-dimensional pastel gradient directly on the Tk canvas."""
+        self._gradient.delete("all")
+        width = max(self.winfo_width(), 2)
+        height = max(self.winfo_height(), 2)
+        # Pastel light source points create the blue/lavender/pink/peach wash
+        # without requiring an external wallpaper or image asset.
+        sources = [
+            (0.04, 0.15, (183, 218, 255), 0.42),
+            (0.24, 0.82, (255, 190, 222), 0.38),
+            (0.49, 0.08, (255, 220, 224), 0.38),
+            (0.68, 0.92, (153, 213, 255), 0.40),
+            (0.91, 0.18, (187, 195, 255), 0.38),
+            (0.98, 0.84, (205, 193, 255), 0.30),
+        ]
+        step = 12
+        for y in range(0, height, step):
+            ny = y / max(height - 1, 1)
+            for x in range(0, width, step):
+                nx = x / max(width - 1, 1)
+                base = [224.0, 236.0, 255.0]
+                weights = []
+                for sx, sy, rgb, strength in sources:
+                    d2 = ((nx - sx) / 0.42) ** 2 + ((ny - sy) / 0.52) ** 2
+                    w = strength * max(0.0, 1.0 - d2 / 2.8) ** 2
+                    weights.append((w, rgb))
+                total = sum(w for w, _ in weights)
+                if total:
+                    # Keep the background airy by blending the source colors
+                    # into a cool blue base rather than painting opaque blobs.
+                    for channel in range(3):
+                        delta = sum(w * (rgb[channel] - base[channel])
+                                    for w, rgb in weights) / max(total, 1e-6)
+                        base[channel] += delta * min(total, 0.9)
+                color = "#%02x%02x%02x" % tuple(
+                    max(0, min(255, round(v))) for v in base
+                )
+                self._gradient.create_rectangle(
+                    x, y, x + step + 1, y + step + 1,
+                    fill=color, outline=color
+                )
+        # Large, faint diagonal glass facets echo the approved reference.
+        self._gradient.create_polygon(
+            0, 0, width * 0.58, 0, width * 0.49, height * 0.19,
+            width * 0.10, height * 0.40, 0, height * 0.23,
+            fill="#EAF3FF", outline="", stipple="gray12"
+        )
+        self._gradient.create_polygon(
+            0, height * 0.76, width * 0.28, height,
+            0, height, fill="#FFDDEB", outline="", stipple="gray25"
+        )
+        self._gradient.lower()
+
+    def _on_resize(self, event) -> None:
+        if event.widget is self:
+            self._paint_gradient()
+
+    def submit_command(self, command: str) -> None:
+        command = command.strip()
+        if not command or self._closing or self.state_store.is_processing:
+            return
+        self.state_store.set_processing(True)
+        worker = threading.Thread(target=self._execute_command, args=(command,), name="OmniOSCommandWorker", daemon=True)
+        self._workers.add(worker)
+        worker.start()
+
+    def _execute_command(self, command: str) -> None:
+        try:
+            decision, result = process_command(command)
+        except Exception as exc:
+            traceback.print_exc()
+            decision = RoutingDecision(intent=Intent.UNKNOWN, route=Route.NONE, confidence=0.0,
+                                       explanation="Command execution raised an exception.")
+            result = ExecutionResult(status=ResultStatus.ERROR, output=None,
+                                     error=f"{type(exc).__name__}: {exc}", used_llm=False)
+        try:
+            self.after(0, lambda d=decision, r=result, c=command: self._finish_command(d, r, c))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _finish_command(self, decision: RoutingDecision, result: Optional[ExecutionResult], command: str) -> None:
+        self._workers = {worker for worker in self._workers if worker.is_alive()}
+        if self._closing:
+            return
+        try:
+            self.state_store.update_result(decision, result, command)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self.state_store.set_processing(False)
+
+    def _on_close(self) -> None:
+        self._closing = True
+        self.destroy()
+
+def main() -> None:
+    app = OmniOSApp()
+    app.mainloop()
+
+if __name__ == "__main__":
+    main()

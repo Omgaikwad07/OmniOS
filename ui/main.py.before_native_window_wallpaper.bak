@@ -1,0 +1,249 @@
+"""OmniOS desktop application launcher with reference-aligned pastel UI."""
+from __future__ import annotations
+
+import threading
+import traceback
+import tkinter as tk
+from typing import Optional
+
+import customtkinter as ctk
+from PIL import Image, ImageTk
+import core.config as config
+from app import process_command
+from core.schemas import ExecutionResult, ResultStatus, Route, RoutingDecision, Intent
+from ui.state import AppState
+from ui.styles import COLORS
+from ui.components.central_panel import CentralPanel
+from ui.components.right_sidebar import RightSidebar
+
+
+class OmniOSApp(ctk.CTk):
+    def __init__(self) -> None:
+        super().__init__()
+        ctk.set_appearance_mode("light")
+        self.title("OmniOS")
+        self.geometry("1536x1024")
+        self.minsize(1120, 760)
+        self.configure(fg_color="#DDE9FF")
+        self.state_store = AppState()
+        self._closing = False
+        self._workers: set[threading.Thread] = set()
+        self._bg_image = None
+        self._bg_photo = None
+
+        self._background = tk.Canvas(self, bd=0, highlightthickness=0, relief="flat")
+        self._background.place(x=0, y=0, relwidth=1, relheight=1)
+        self._paint_job = None
+        self.bind("<Configure>", self._on_resize)
+
+        self.central_panel = CentralPanel(
+            self, state=self.state_store, on_submit=self.submit_command
+        )
+        self.central_panel.place(relx=0.078, rely=0.027, relwidth=0.657, relheight=0.87)
+        self.right_sidebar = RightSidebar(self, state=self.state_store)
+        self.right_sidebar.place(relx=0.747, rely=0.027, relwidth=0.245, relheight=0.91)
+
+        self.tk.call("lower", self._background._w)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(80, self._paint_gradient)
+
+    def _on_resize(self, event=None) -> None:
+        if event is None or event.widget is self:
+            if self._paint_job:
+                try:
+                    self.after_cancel(self._paint_job)
+                except tk.TclError:
+                    pass
+            self._paint_job = self.after(100, self._paint_gradient)
+
+    def _paint_gradient(self) -> None:
+        """Render a continuous pastel wallpaper with flowing translucent curves."""
+        if self._closing:
+            return
+
+        try:
+            from PIL import Image, ImageDraw, ImageFilter, ImageTk
+            import math
+
+            width = max(2, self.winfo_width())
+            height = max(2, self.winfo_height())
+
+            # Render at reduced resolution, then upscale smoothly.
+            scale = min(1.0, 1000 / max(width, height))
+            w = max(2, int(width * scale))
+            h = max(2, int(height * scale))
+
+            # Soft pastel color fields.
+            image = Image.new("RGB", (w, h))
+            pixels = image.load()
+
+            sources = [
+                (0.02, 0.02, (160, 207, 255), 0.70),
+                (0.25, 0.18, (177, 231, 255), 0.48),
+                (0.54, 0.02, (255, 220, 224), 0.65),
+                (0.77, 0.08, (255, 194, 207), 0.54),
+                (0.98, 0.16, (134, 185, 255), 0.69),
+                (0.05, 0.57, (255, 157, 220), 0.47),
+                (0.37, 0.55, (205, 232, 255), 0.56),
+                (0.72, 0.64, (222, 208, 255), 0.55),
+                (0.98, 0.83, (244, 177, 255), 0.53),
+                (0.05, 0.98, (255, 167, 198), 0.63),
+                (0.48, 0.98, (156, 197, 255), 0.56),
+                (0.76, 0.99, (145, 153, 255), 0.57),
+            ]
+
+            for y in range(h):
+                ny = y / max(1, h - 1)
+                for x in range(w):
+                    nx = x / max(1, w - 1)
+                    base = [226.0, 237.0, 255.0]
+                    weights = []
+                    for sx, sy, rgb, strength in sources:
+                        distance = ((nx-sx)/0.48)**2 + ((ny-sy)/0.48)**2
+                        weight = strength * math.exp(-distance * 1.5)
+                        weights.append((weight, rgb))
+
+                    total = sum(weight for weight, _ in weights)
+                    blend = min(0.84, total * 0.72)
+                    if total:
+                        for channel in range(3):
+                            target = sum(
+                                weight * rgb[channel]
+                                for weight, rgb in weights
+                            ) / total
+                            base[channel] = (
+                                base[channel] * (1-blend)
+                                + target * blend
+                            )
+                    pixels[x, y] = tuple(
+                        max(0, min(255, int(value))) for value in base
+                    )
+
+            # Draw flowing translucent ribbons over the color field.
+            overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            def curve(p0, p1, p2, p3, steps=100):
+                points = []
+                for i in range(steps + 1):
+                    t = i / steps
+                    u = 1 - t
+                    x = (u**3*p0[0] + 3*u*u*t*p1[0]
+                         + 3*u*t*t*p2[0] + t**3*p3[0])
+                    y = (u**3*p0[1] + 3*u*u*t*p1[1]
+                         + 3*u*t*t*p2[1] + t**3*p3[1])
+                    points.append((int(x*w), int(y*h)))
+                return points
+
+            def ribbon(top_curve, bottom_curve, fill, edge=True):
+                points = curve(*top_curve) + list(reversed(curve(*bottom_curve)))
+                draw.polygon(points, fill=fill)
+                if edge:
+                    draw.line(curve(*top_curve), fill=(255,255,255,100),
+                              width=max(1, int(1.2*scale)))
+                    draw.line(curve(*bottom_curve), fill=(255,255,255,65),
+                              width=max(1, int(0.8*scale)))
+
+            # Large pale ribbon flowing across the upper edge.
+            ribbon(
+                ((0.08,-0.10),(0.20,0.27),(0.53,0.39),(1.08,0.14)),
+                ((-0.05,0.25),(0.20,0.53),(0.57,0.48),(1.08,0.31)),
+                (255,255,255,48)
+            )
+
+            # Cool blue translucent sweep from the left.
+            ribbon(
+                ((-0.08,0.27),(0.08,0.50),(0.28,0.46),(0.48,0.36)),
+                ((-0.08,0.48),(0.10,0.69),(0.30,0.57),(0.52,0.49)),
+                (105,211,255,45)
+            )
+
+            # Broad central blue/lavender sweep.
+            ribbon(
+                ((-0.08,0.70),(0.14,0.44),(0.31,0.38),(0.57,0.52)),
+                ((-0.08,0.92),(0.15,0.67),(0.35,0.73),(0.66,0.86)),
+                (140,191,255,48)
+            )
+
+            # Warm pink curves along the lower edge.
+            ribbon(
+                ((-0.08,0.72),(0.18,0.79),(0.32,1.02),(0.57,1.08)),
+                ((-0.08,0.88),(0.16,0.94),(0.30,1.10),(0.51,1.12)),
+                (255,169,206,65)
+            )
+
+            # Lavender wave entering from the lower-right.
+            ribbon(
+                ((0.38,1.08),(0.59,0.78),(0.78,0.69),(1.08,0.90)),
+                ((0.49,1.10),(0.70,0.88),(0.86,0.86),(1.08,1.04)),
+                (137,145,255,66)
+            )
+
+            image = Image.alpha_composite(image.convert("RGBA"), overlay)
+            image = image.convert("RGB").resize(
+                (width, height), Image.Resampling.LANCZOS
+            )
+
+            self._bg_photo = ImageTk.PhotoImage(image)
+            self._background.delete("all")
+            self._background.create_image(
+                0, 0, image=self._bg_photo, anchor="nw"
+            )
+
+            # Keep the wallpaper behind the existing application panels.
+            self.tk.call("lower", self._background._w)
+            self.central_panel.lift()
+            self.right_sidebar.lift()
+
+        except (tk.TclError, RuntimeError, OSError, ValueError) as exc:
+            print(f"OmniOS background rendering warning: {exc}")
+
+    def submit_command(self, command: str) -> None:
+        command = command.strip()
+        if not command or self._closing or self.state_store.is_processing:
+            return
+        self.state_store.set_processing(True)
+        worker = threading.Thread(
+            target=self._execute_command, args=(command,),
+            name="OmniOSCommandWorker", daemon=True,
+        )
+        self._workers.add(worker)
+        worker.start()
+
+    def _execute_command(self, command: str) -> None:
+        try:
+            decision, result = process_command(command)
+        except Exception as exc:
+            traceback.print_exc()
+            decision = RoutingDecision(
+                intent=Intent.UNKNOWN, route=Route.NONE, confidence=0.0,
+                explanation="Command execution raised an exception.",
+            )
+            result = ExecutionResult(
+                status=ResultStatus.ERROR, output=None,
+                error=f"{type(exc).__name__}: {exc}", used_llm=False,
+            )
+        try:
+            self.after(0, lambda d=decision, r=result, c=command: self._finish_command(d, r, c))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _finish_command(self, decision: RoutingDecision, result: Optional[ExecutionResult], command: str) -> None:
+        self._workers = {worker for worker in self._workers if worker.is_alive()}
+        if self._closing:
+            return
+        self.state_store.update_result(decision, result, command)
+        self.state_store.set_processing(False)
+
+    def _on_close(self) -> None:
+        self._closing = True
+        self.destroy()
+
+
+def main() -> None:
+    app = OmniOSApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,153 @@
+"""OmniOS desktop application launcher with reference-aligned pastel UI."""
+from __future__ import annotations
+
+import threading
+import traceback
+import tkinter as tk
+from typing import Optional
+
+import customtkinter as ctk
+from PIL import Image, ImageTk
+import core.config as config
+from app import process_command
+from core.schemas import ExecutionResult, ResultStatus, Route, RoutingDecision, Intent
+from ui.state import AppState
+from ui.styles import COLORS
+from ui.components.central_panel import CentralPanel
+from ui.components.right_sidebar import RightSidebar
+
+
+class OmniOSApp(ctk.CTk):
+    def __init__(self) -> None:
+        super().__init__()
+        ctk.set_appearance_mode("light")
+        self.title("OmniOS")
+        self.geometry("1536x1024")
+        self.minsize(1120, 760)
+        self.configure(fg_color="#DDE9FF")
+        self.state_store = AppState()
+        self._closing = False
+        self._workers: set[threading.Thread] = set()
+        self._bg_image = None
+        self._bg_photo = None
+
+        self._background = tk.Canvas(self, bd=0, highlightthickness=0, relief="flat")
+        self._background.place(x=0, y=0, relwidth=1, relheight=1)
+        self._paint_job = None
+        self.bind("<Configure>", self._on_resize)
+
+        self.central_panel = CentralPanel(
+            self, state=self.state_store, on_submit=self.submit_command
+        )
+        self.central_panel.place(relx=0.078, rely=0.027, relwidth=0.657, relheight=0.87)
+        self.right_sidebar = RightSidebar(self, state=self.state_store)
+        self.right_sidebar.place(relx=0.747, rely=0.027, relwidth=0.245, relheight=0.91)
+
+        self.tk.call("lower", self._background._w)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(80, self._paint_gradient)
+
+    def _on_resize(self, event=None) -> None:
+        if event is None or event.widget is self:
+            if self._paint_job:
+                try:
+                    self.after_cancel(self._paint_job)
+                except tk.TclError:
+                    pass
+            self._paint_job = self.after(100, self._paint_gradient)
+
+    def _paint_gradient(self) -> None:
+        """Render a smooth, cached low-resolution pastel gradient and scale it."""
+        if self._closing:
+            return
+        try:
+            width = max(2, self.winfo_width())
+            height = max(2, self.winfo_height())
+            render_w, render_h = max(180, width // 4), max(120, height // 4)
+            cache_key = (render_w, render_h)
+            if getattr(self, "_gradient_cache_key", None) != cache_key:
+                image = Image.new("RGB", cache_key)
+                pixels = image.load()
+                sources = (
+                    (0.02, 0.10, (166, 211, 255), 0.66),
+                    (0.22, 0.72, (255, 183, 220), 0.57),
+                    (0.52, 0.04, (255, 217, 220), 0.58),
+                    (0.68, 0.90, (139, 207, 255), 0.65),
+                    (0.94, 0.15, (169, 183, 255), 0.60),
+                    (0.98, 0.82, (199, 183, 255), 0.46),
+                )
+                for y in range(render_h):
+                    ny = y / max(1, render_h - 1)
+                    for x in range(render_w):
+                        nx = x / max(1, render_w - 1)
+                        base_rgb, accum, total = [226.0, 237.0, 255.0], [0.0, 0.0, 0.0], 0.0
+                        for sx, sy, rgb, strength in sources:
+                            d = ((nx-sx)/0.44)**2 + ((ny-sy)/0.54)**2
+                            weight = strength * max(0.0, 1.0-d/2.8)**2
+                            total += weight
+                            for channel in range(3): accum[channel] += weight * rgb[channel]
+                        blend = min(total, 0.78)
+                        if total:
+                            for channel in range(3):
+                                base_rgb[channel] = base_rgb[channel]*(1-blend) + (accum[channel]/total)*blend
+                        pixels[x, y] = tuple(int(max(0, min(255, v))) for v in base_rgb)
+                self._gradient_cache, self._gradient_cache_key = image, cache_key
+            image = self._gradient_cache.resize((width, height), Image.Resampling.BICUBIC)
+            self._bg_photo = ImageTk.PhotoImage(image)
+            self._background.delete("all")
+            self._background.create_image(0, 0, image=self._bg_photo, anchor="nw")
+            self.tk.call("lower", self._background._w)
+            self.central_panel.lift()
+            self.right_sidebar.lift()
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def submit_command(self, command: str) -> None:
+        command = command.strip()
+        if not command or self._closing or self.state_store.is_processing:
+            return
+        self.state_store.set_processing(True)
+        worker = threading.Thread(
+            target=self._execute_command, args=(command,),
+            name="OmniOSCommandWorker", daemon=True,
+        )
+        self._workers.add(worker)
+        worker.start()
+
+    def _execute_command(self, command: str) -> None:
+        try:
+            decision, result = process_command(command)
+        except Exception as exc:
+            traceback.print_exc()
+            decision = RoutingDecision(
+                intent=Intent.UNKNOWN, route=Route.NONE, confidence=0.0,
+                explanation="Command execution raised an exception.",
+            )
+            result = ExecutionResult(
+                status=ResultStatus.ERROR, output=None,
+                error=f"{type(exc).__name__}: {exc}", used_llm=False,
+            )
+        try:
+            self.after(0, lambda d=decision, r=result, c=command: self._finish_command(d, r, c))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _finish_command(self, decision: RoutingDecision, result: Optional[ExecutionResult], command: str) -> None:
+        self._workers = {worker for worker in self._workers if worker.is_alive()}
+        if self._closing:
+            return
+        self.state_store.update_result(decision, result, command)
+        self.state_store.set_processing(False)
+
+    def _on_close(self) -> None:
+        self._closing = True
+        self.destroy()
+
+
+def main() -> None:
+    app = OmniOSApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
